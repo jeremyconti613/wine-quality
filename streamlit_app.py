@@ -7,8 +7,15 @@ import seaborn as sns
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression, Ridge, Lasso
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import (
+    mean_squared_error,
+    mean_absolute_error,
+    r2_score,
+    accuracy_score,
+    roc_auc_score,
+    confusion_matrix,
+)
 
 from src.preprocessing import (
     load_data,
@@ -60,11 +67,24 @@ def get_prepared_features(df: pd.DataFrame, threshold: int = 7):
 
 
 def build_regression_features(df: pd.DataFrame):
-    """Prépare les features pour la régression de la note exacte."""
+    """Prépare les features pour la régression de la note exacte.
+
+    On ne conserve que les variables :
+    - density
+    - residual sugar
+    - alcohol
+    - volatile acidity
+    """
     df_reg = df.copy()
-    # One-hot encode du type de vin (colonne binaire wine_type_white)
-    df_reg = pd.get_dummies(df_reg, columns=["wine_type"], drop_first=True)
-    feature_cols = [c for c in df_reg.columns if c != "quality"]
+    # Optionnellement, on pourrait encoder le type de vin, mais ici on ne garde
+    # que les caractéristiques physicochimiques indiquées.
+    candidate_features = [
+        "density",
+        "residual sugar",
+        "alcohol",
+        "volatile acidity",
+    ]
+    feature_cols = [c for c in candidate_features if c in df_reg.columns]
     X = df_reg[feature_cols]
     y = df_reg["quality"]
     return X, y, feature_cols
@@ -94,7 +114,8 @@ def main():
             "4. Visualisations exploratoires",
             "5. Relations & hypothèses",
             "6. Régression (note exacte)",
-            "7. Interprétation & limites",
+            "7. Classification (régression logistique)",
+            "8. Interprétation & limites",
         ),
     )
 
@@ -118,7 +139,9 @@ def main():
         show_relations_and_hypotheses(df_filtered)
     elif section == "6. Régression (note exacte)":
         show_regression(df_filtered)
-    elif section == "7. Interprétation & limites":
+    elif section == "7. Classification (régression logistique)":
+        show_logistic_regression(df_filtered)
+    elif section == "8. Interprétation & limites":
         show_conclusion(df_filtered)
 
 
@@ -417,30 +440,36 @@ def show_regression(df: pd.DataFrame):
 
     st.markdown(
         """
-        Nous entraînons ici un modèle de **régression linéaire (avec ou sans régularisation)**  
-        pour prédire directement la note de qualité `quality` (0–10) à partir des
-        caractéristiques physicochimiques et du type de vin.
+        Nous entraînons ici un **modèle de régression linéaire simple** pour prédire
+        directement la note de qualité `quality` (0–10) à partir d’un sous-ensemble
+        de caractéristiques **choisies par l'utilisateur** parmi les variables
+        physicochimiques disponibles.
         """
     )
 
-    model_type = st.selectbox(
-        "Choisir le type de modèle",
-        options=["Régression linéaire", "Ridge (L2)", "Lasso (L1)"],
-        index=1,
+    # Choix interactif des caractéristiques d'entrée
+    numeric_cols = [
+        c for c in df.select_dtypes(include=[np.number]).columns if c != "quality"
+    ]
+    default_features = [
+        f
+        for f in ["density", "residual sugar", "alcohol", "volatile acidity"]
+        if f in numeric_cols
+    ]
+    selected_features = st.multiselect(
+        "Caractéristiques utilisées comme entrées du modèle de régression",
+        options=numeric_cols,
+        default=default_features or numeric_cols,
     )
 
-    alpha = None
-    if model_type in ("Ridge (L2)", "Lasso (L1)"):
-        alpha = st.slider(
-            "Coefficient de régularisation (alpha)",
-            min_value=0.01,
-            max_value=10.0,
-            value=1.0,
-            step=0.01,
-        )
+    if not selected_features:
+        st.warning("Veuillez sélectionner au moins une caractéristique pour entraîner le modèle.")
+        return
 
-    # Préparation des données pour la régression
-    X, y, feature_cols = build_regression_features(df)
+    # Préparation des données pour la régression en fonction des caractéristiques choisies
+    X = df[selected_features]
+    y = df["quality"]
+    feature_cols = selected_features
 
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
@@ -450,13 +479,8 @@ def show_regression(df: pd.DataFrame):
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # Choix du modèle
-    if model_type == "Régression linéaire":
-        model = LinearRegression()
-    elif model_type == "Ridge (L2)":
-        model = Ridge(alpha=alpha, random_state=42)
-    else:  # Lasso
-        model = Lasso(alpha=alpha, random_state=42)
+    # Modèle de régression linéaire (sans régularisation explicite)
+    model = LinearRegression()
 
     model.fit(X_train_scaled, y_train)
     y_pred = model.predict(X_test_scaled)
@@ -513,8 +537,119 @@ def show_regression(df: pd.DataFrame):
         **Interprétation** :  
         - Les coefficients indiquent comment la note de qualité varie en moyenne lorsqu'une
           variable augmente d'une unité (toutes choses égales par ailleurs).  
-        - La régularisation (**Ridge / Lasso**) permet de **stabiliser** le modèle et de
-          limiter le sur-apprentissage, en particulier en présence de variables corrélées.
+        """
+    )
+
+
+def show_logistic_regression(df: pd.DataFrame):
+    st.header("7. Classification avec régression logistique")
+
+    st.markdown(
+        """
+        Nous entraînons ici un modèle de **régression logistique** pour prédire si un vin
+        est **bon** (1) ou **non bon** (0) à partir de ses caractéristiques.
+        La cible binaire `quality_label` est définie à partir de la note `quality`.
+        """
+    )
+
+    # Choix du seuil pour définir un "bon" vin
+    threshold = st.slider(
+        "Seuil de qualité pour considérer un vin comme « bon » (quality ≥ seuil)",
+        min_value=int(df["quality"].min()),
+        max_value=int(df["quality"].max()),
+        value=7,
+        step=1,
+    )
+
+    # Préparation des features binaires via la fonction existante
+    X_full, y, feature_cols_full = get_prepared_features(df, threshold=threshold)
+
+    st.markdown(
+        f"Classe positive : vins avec `quality` ≥ **{threshold}** (label = 1)."
+    )
+
+    # Choix interactif des caractéristiques d'entrée
+    default_features = [
+        f
+        for f in ["alcohol", "volatile acidity", "density", "sulphates", "wine_type_white"]
+        if f in feature_cols_full
+    ]
+    selected_features = st.multiselect(
+        "Caractéristiques utilisées comme entrées du modèle logistique",
+        options=feature_cols_full,
+        default=default_features or feature_cols_full,
+    )
+
+    if not selected_features:
+        st.warning("Veuillez sélectionner au moins une caractéristique pour entraîner le modèle.")
+        return
+
+    X = X_full[selected_features]
+
+    # Split train / test avec stratification
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Standardisation
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Modèle de régression logistique
+    clf = LogisticRegression(max_iter=1000, solver="liblinear")
+    clf.fit(X_train_scaled, y_train)
+
+    y_proba = clf.predict_proba(X_test_scaled)[:, 1]
+    y_pred = (y_proba >= 0.5).astype(int)
+
+    acc = accuracy_score(y_test, y_pred)
+    try:
+        auc = roc_auc_score(y_test, y_proba)
+    except ValueError:
+        auc = float("nan")
+
+    st.subheader("7.1 Performances du modèle sur le jeu de test")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Accuracy", f"{acc:.3f}")
+    with c2:
+        st.metric("ROC AUC", f"{auc:.3f}" if not np.isnan(auc) else "N/A")
+
+    st.subheader("7.2 Matrice de confusion")
+    cm = confusion_matrix(y_test, y_pred)
+    cm_df = pd.DataFrame(
+        cm,
+        index=["Réel 0", "Réel 1"],
+        columns=["Prédit 0", "Prédit 1"],
+    )
+    fig, ax = plt.subplots()
+    sns.heatmap(cm_df, annot=True, fmt="d", cmap="Blues", ax=ax)
+    ax.set_title("Matrice de confusion (0 = non bon, 1 = bon)")
+    st.pyplot(fig)
+
+    st.subheader("7.3 Importance des variables (coefficients)")
+    coef_series = pd.Series(clf.coef_[0], index=selected_features)
+    coef_sorted = coef_series.reindex(
+        coef_series.abs().sort_values(ascending=False).index
+    )
+    st.write("Coefficients triés par importance absolue :")
+    st.dataframe(coef_sorted.to_frame("coefficient"))
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    coef_sorted.head(15).plot(kind="barh", ax=ax)
+    ax.set_title("Principales variables explicatives (régression logistique)")
+    ax.invert_yaxis()
+    st.pyplot(fig)
+
+    st.markdown(
+        """
+        **Interprétation** :  
+        - Un coefficient positif indique qu'une augmentation de la variable **augmente**
+          la probabilité qu'un vin soit classé comme **bon** (label = 1).  
+        - Un coefficient négatif indique l'effet inverse.  
+        - La régression logistique fournit donc un compromis intéressant entre
+          **performance prédictive** et **interprétabilité** des effets des variables.
         """
     )
 
@@ -555,23 +690,23 @@ def show_conclusion(df: pd.DataFrame):
         """
     )
 
-    st.subheader("6.4 Perspectives")
-    st.markdown(
-        """
-        - Intégrer des **modèles prédictifs** (SVM, Random Forest, Gradient Boosting) dans
-          cette application pour comparer leurs performances.  
-        - Explorer des approches de **sélection de variables** pour réduire la dimension
-          et améliorer l'interprétabilité.  
-        - Étendre l'analyse à d'autres datasets de vins afin de tester la **robustesse**
-          des conclusions actuelles.
-        """
-    )
+    # st.subheader("6.4 Perspectives")
+    # st.markdown(
+    #     """
+    #     - Intégrer des **modèles prédictifs** (SVM, Random Forest, Gradient Boosting) dans
+    #       cette application pour comparer leurs performances.  
+    #     - Explorer des approches de **sélection de variables** pour réduire la dimension
+    #       et améliorer l'interprétabilité.  
+    #     - Étendre l'analyse à d'autres datasets de vins afin de tester la **robustesse**
+    #       des conclusions actuelles.
+    #     """
+    # )
 
-    st.info(
-        "Cette application Streamlit résume le notebook en une présentation structurée : "
-        "compréhension des données, qualité, préparation, exploration visuelle, "
-        "formulation d'hypothèses et conclusions."
-    )
+    # st.info(
+    #     "Cette application Streamlit résume le notebook en une présentation structurée : "
+    #     "compréhension des données, qualité, préparation, exploration visuelle, "
+    #     "formulation d'hypothèses et conclusions."
+    # )
 
 
 if __name__ == "__main__":
