@@ -5,6 +5,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+
 from src.preprocessing import (
     load_data,
     data_quality_report,
@@ -54,6 +59,17 @@ def get_prepared_features(df: pd.DataFrame, threshold: int = 7):
     return X, y, feature_cols
 
 
+def build_regression_features(df: pd.DataFrame):
+    """Prépare les features pour la régression de la note exacte."""
+    df_reg = df.copy()
+    # One-hot encode du type de vin (colonne binaire wine_type_white)
+    df_reg = pd.get_dummies(df_reg, columns=["wine_type"], drop_first=True)
+    feature_cols = [c for c in df_reg.columns if c != "quality"]
+    X = df_reg[feature_cols]
+    y = df_reg["quality"]
+    return X, y, feature_cols
+
+
 def main():
     df = load_combined_data()
     report, missing_df, iqr_outliers, z_outliers = get_quality_reports(df)
@@ -77,7 +93,8 @@ def main():
             "3. Qualité des données",
             "4. Visualisations exploratoires",
             "5. Relations & hypothèses",
-            "6. Interprétation & limites",
+            "6. Régression (note exacte)",
+            "7. Interprétation & limites",
         ),
     )
 
@@ -99,7 +116,9 @@ def main():
         show_visualisations(df_filtered)
     elif section == "5. Relations & hypothèses":
         show_relations_and_hypotheses(df_filtered)
-    elif section == "6. Interprétation & limites":
+    elif section == "6. Régression (note exacte)":
+        show_regression(df_filtered)
+    elif section == "7. Interprétation & limites":
         show_conclusion(df_filtered)
 
 
@@ -389,6 +408,113 @@ def show_relations_and_hypotheses(df: pd.DataFrame):
         - **Classification** (logistique, arbres, Random Forest, SVM) pour prédire *bon* vs *non bon*.  
         - Les modèles à marge large comme les **SVM** sont bien adaptés à ce type de donnée
           numériquement homogène et ont montré de bonnes performances dans la littérature.
+        """
+    )
+
+
+def show_regression(df: pd.DataFrame):
+    st.header("6. Régression linéaire pour prédire la note exacte")
+
+    st.markdown(
+        """
+        Nous entraînons ici un modèle de **régression linéaire (avec ou sans régularisation)**  
+        pour prédire directement la note de qualité `quality` (0–10) à partir des
+        caractéristiques physicochimiques et du type de vin.
+        """
+    )
+
+    model_type = st.selectbox(
+        "Choisir le type de modèle",
+        options=["Régression linéaire", "Ridge (L2)", "Lasso (L1)"],
+        index=1,
+    )
+
+    alpha = None
+    if model_type in ("Ridge (L2)", "Lasso (L1)"):
+        alpha = st.slider(
+            "Coefficient de régularisation (alpha)",
+            min_value=0.01,
+            max_value=10.0,
+            value=1.0,
+            step=0.01,
+        )
+
+    # Préparation des données pour la régression
+    X, y, feature_cols = build_regression_features(df)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Choix du modèle
+    if model_type == "Régression linéaire":
+        model = LinearRegression()
+    elif model_type == "Ridge (L2)":
+        model = Ridge(alpha=alpha, random_state=42)
+    else:  # Lasso
+        model = Lasso(alpha=alpha, random_state=42)
+
+    model.fit(X_train_scaled, y_train)
+    y_pred = model.predict(X_test_scaled)
+
+    mae = mean_absolute_error(y_test, y_pred)
+    mse = mean_squared_error(y_test, y_pred)
+    rmse = np.sqrt(mse)
+    r2 = r2_score(y_test, y_pred)
+
+    st.subheader("6.1 Performances du modèle sur le jeu de test")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("MAE", f"{mae:.3f}")
+    with c2:
+        st.metric("RMSE", f"{rmse:.3f}")
+    with c3:
+        st.metric("R²", f"{r2:.3f}")
+
+    st.markdown(
+        """
+        - **MAE** : erreur absolue moyenne en points de qualité.  
+        - **RMSE** : pénalise davantage les grandes erreurs.  
+        - **R²** : proportion de la variance de `quality` expliquée par le modèle.
+        """
+    )
+
+    st.subheader("6.2 Prédiction vs valeur réelle")
+    fig, ax = plt.subplots()
+    ax.scatter(y_test, y_pred, alpha=0.5)
+    min_q = min(y_test.min(), y_pred.min())
+    max_q = max(y_test.max(), y_pred.max())
+    ax.plot([min_q, max_q], [min_q, max_q], "k--", label="y = x")
+    ax.set_xlabel("Qualité réelle")
+    ax.set_ylabel("Qualité prédite")
+    ax.set_title("Qualité réelle vs prédite (jeu de test)")
+    ax.legend()
+    st.pyplot(fig)
+
+    st.subheader("6.3 Poids des variables (coefficients)")
+    if hasattr(model, "coef_"):
+        coef_series = pd.Series(model.coef_, index=feature_cols)
+        coef_sorted = coef_series.reindex(coef_series.abs().sort_values(ascending=False).index)
+        st.write("Top variables (en valeur absolue des coefficients) :")
+        st.dataframe(coef_sorted.to_frame("coefficient"))
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        coef_sorted.head(15).plot(kind="barh", ax=ax)
+        ax.set_title("Principales variables explicatives selon le modèle")
+        ax.invert_yaxis()
+        st.pyplot(fig)
+
+    st.markdown(
+        """
+        **Interprétation** :  
+        - Les coefficients indiquent comment la note de qualité varie en moyenne lorsqu'une
+          variable augmente d'une unité (toutes choses égales par ailleurs).  
+        - La régularisation (**Ridge / Lasso**) permet de **stabiliser** le modèle et de
+          limiter le sur-apprentissage, en particulier en présence de variables corrélées.
         """
     )
 
