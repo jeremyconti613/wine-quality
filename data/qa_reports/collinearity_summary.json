@@ -1,0 +1,8 @@
+{
+  "n_features": 11,
+  "high_vif_features": [
+    "density",
+    "residual sugar"
+  ],
+  "n_high_corr_pairs": 0
+}
