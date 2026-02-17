@@ -200,7 +200,7 @@ def show_preparation(df: pd.DataFrame):
         Dans le notebook, la préparation vise principalement à :  
         - **Créer une cible binaire** : distinguer les vins *bons* (qualité ≥ seuil) des autres.  
         - **Encoder le type de vin** (`wine_type`) en variables numériques.  
-        - **Standardiser** les variables numériques pour les modèles de machine learning.
+        - **Standardiser** les variables numériques.
         """
     )
 
@@ -208,7 +208,7 @@ def show_preparation(df: pd.DataFrame):
         "Seuil de qualité pour considérer un vin comme « bon » (quality ≥ seuil)",
         min_value=int(df["quality"].min()),
         max_value=int(df["quality"].max()),
-        value=7,
+        value=6,
         step=1,
     )
 
@@ -345,7 +345,7 @@ def show_visualisations(df: pd.DataFrame):
     feature = st.selectbox(
         "Choisir une variable numérique à explorer",
         options=df.select_dtypes(include=[np.number]).columns.tolist(),
-        index=0,
+        index=10,
     )
     fig, ax = plt.subplots()
     sns.histplot(
@@ -451,15 +451,11 @@ def show_regression(df: pd.DataFrame):
     numeric_cols = [
         c for c in df.select_dtypes(include=[np.number]).columns if c != "quality"
     ]
-    default_features = [
-        f
-        for f in ["density", "residual sugar", "alcohol", "volatile acidity"]
-        if f in numeric_cols
-    ]
+
     selected_features = st.multiselect(
         "Caractéristiques utilisées comme entrées du modèle de régression",
         options=numeric_cols,
-        default=default_features or numeric_cols,
+        default=numeric_cols,
     )
 
     if not selected_features:
@@ -489,6 +485,7 @@ def show_regression(df: pd.DataFrame):
     mse = mean_squared_error(y_test, y_pred)
     rmse = np.sqrt(mse)
     r2 = r2_score(y_test, y_pred)
+    residuals = y_test - y_pred
 
     st.subheader("6.1 Performances du modèle sur le jeu de test")
     c1, c2, c3 = st.columns(3)
@@ -507,7 +504,33 @@ def show_regression(df: pd.DataFrame):
         """
     )
 
-    st.subheader("6.2 Prédiction vs valeur réelle")
+    st.subheader("6.2 Analyse des résidus")
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        fig, ax = plt.subplots()
+        sns.histplot(residuals, kde=True, ax=ax)
+        ax.set_title("Distribution des résidus (y_réel - y_prédit)")
+        ax.set_xlabel("Résidu")
+        st.pyplot(fig)
+    with col_r2:
+        fig, ax = plt.subplots()
+        ax.scatter(y_pred, residuals, alpha=0.5)
+        ax.axhline(0, color="red", linestyle="--")
+        ax.set_xlabel("Qualité prédite")
+        ax.set_ylabel("Résidu")
+        ax.set_title("Résidus en fonction des prédictions")
+        st.pyplot(fig)
+
+    st.markdown(
+        f"""
+        - Résidus **moyens** : {residuals.mean():.3f} (devrait être proche de 0 si le modèle est bien calibré).  
+        - Résidus **écart-type** : {residuals.std():.3f}.  
+        - On recherche visuellement une **dispersion aléatoire** autour de 0 (pas de structure évidente),
+          signe que les hypothèses du modèle linéaire sont raisonnables.
+        """
+    )
+
+    st.subheader("6.3 Prédiction vs valeur réelle")
     fig, ax = plt.subplots()
     ax.scatter(y_test, y_pred, alpha=0.5)
     min_q = min(y_test.min(), y_pred.min())
@@ -519,7 +542,7 @@ def show_regression(df: pd.DataFrame):
     ax.legend()
     st.pyplot(fig)
 
-    st.subheader("6.3 Poids des variables (coefficients)")
+    st.subheader("6.4 Poids des variables (coefficients)")
     if hasattr(model, "coef_"):
         coef_series = pd.Series(model.coef_, index=feature_cols)
         coef_sorted = coef_series.reindex(coef_series.abs().sort_values(ascending=False).index)
@@ -557,7 +580,7 @@ def show_logistic_regression(df: pd.DataFrame):
         "Seuil de qualité pour considérer un vin comme « bon » (quality ≥ seuil)",
         min_value=int(df["quality"].min()),
         max_value=int(df["quality"].max()),
-        value=7,
+        value=6,
         step=1,
     )
 
@@ -569,15 +592,10 @@ def show_logistic_regression(df: pd.DataFrame):
     )
 
     # Choix interactif des caractéristiques d'entrée
-    default_features = [
-        f
-        for f in ["alcohol", "volatile acidity", "density", "sulphates", "wine_type_white"]
-        if f in feature_cols_full
-    ]
     selected_features = st.multiselect(
         "Caractéristiques utilisées comme entrées du modèle logistique",
         options=feature_cols_full,
-        default=default_features or feature_cols_full,
+        default=feature_cols_full,
     )
 
     if not selected_features:
@@ -655,9 +673,9 @@ def show_logistic_regression(df: pd.DataFrame):
 
 
 def show_conclusion(df: pd.DataFrame):
-    st.header("6. Interprétation globale & limites")
+    st.header("8. Interprétation globale & limites")
 
-    st.subheader("6.1 Synthèse des principaux résultats exploratoires")
+    st.subheader("8.1 Synthèse des principaux résultats exploratoires")
     st.markdown(
         """
         - Les jeux de données (rouge et blanc) sont **propres**, sans valeurs manquantes,
@@ -668,7 +686,7 @@ def show_conclusion(df: pd.DataFrame):
         """
     )
 
-    st.subheader("6.2 Interprétation statistique & significativité (niveau exploratoire)")
+    st.subheader("8.2 Interprétation statistique & significativité (niveau exploratoire)")
     st.markdown(
         """
         - Les corrélations observées servent de **pistes** mais ne suffisent pas à établir
@@ -680,7 +698,7 @@ def show_conclusion(df: pd.DataFrame):
         """
     )
 
-    st.subheader("6.3 Limitations")
+    st.subheader("8.3 Limitations")
     st.markdown(
         """
         - Absence d'informations sur le **prix**, la **marque**, le **millésime** ou la **région précise**.  
@@ -690,7 +708,7 @@ def show_conclusion(df: pd.DataFrame):
         """
     )
 
-    # st.subheader("6.4 Perspectives")
+    # st.subheader("8.4 Perspectives")
     # st.markdown(
     #     """
     #     - Intégrer des **modèles prédictifs** (SVM, Random Forest, Gradient Boosting) dans
